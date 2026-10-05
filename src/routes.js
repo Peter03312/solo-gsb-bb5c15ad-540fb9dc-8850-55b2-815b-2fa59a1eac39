@@ -38,6 +38,10 @@ const {
   parseRecoveryBody, buildRecoveryView, evaluateRecovery,
   SHAPE_STATES: RECOVERY_SHAPE_STATES, STALE_STATES: RECOVERY_STALE_STATES,
 } = require('./translation-recovery');
+const {
+  parseCommentBody, parseVersionBody, syncComments, buildCommentsView,
+  getComment, loadCommentView, intersectingSubtitles, snapshotOf,
+} = require('./comment');
 const { toWebVtt } = require('./vtt');
 
 /**
@@ -151,6 +155,8 @@ function createApp(db) {
     // 说话人归属同样留作历史（不按展示序号转移，新排版的行待标注）。
     syncTranslations(db, p.id);
     syncAttributions(db, p.id);
+    // 导入代次已推进：旧代次复核意见转历史（仅查看，不附到新词段、不可关闭）
+    syncComments(db, p.id);
     res.json(loadProject(db, p.id));
   });
 
@@ -259,6 +265,9 @@ function createApp(db) {
     syncTranslations(db, p.id);
     // 重排删除行的归属留作历史；保留 ID 的行（仅 idx 变化或原地更新）归属继续有效
     syncAttributions(db, p.id);
+    // 重排拆并/字幕行更替后：已关闭意见的相交字幕快照若漂移则转待复核；
+    // 意见锚定词区间，不按字幕 ID 或行号迁移
+    syncComments(db, p.id);
     const fresh = loadProject(db, p.id);
     res.json({ sub_version: fresh.sub_version, subtitles: fresh.subtitles });
   });
@@ -317,6 +326,8 @@ function createApp(db) {
     tx();
     // 源字幕文本/时间变化 → 各语言该条译文转待复核；仅锁定切换（内容一致）不失效
     syncTranslations(db, p.id);
+    // 同理：已关闭意见的相交字幕快照漂移 → 待复核；仅锁定/展示顺序变化不触发
+    syncComments(db, p.id);
     const fresh = loadProject(db, p.id);
     res.json({ sub_version: fresh.sub_version, subtitle: fresh.subtitles.find((s) => s.id === sid) });
   });
@@ -954,6 +965,8 @@ function createApp(db) {
       const subVersion = bumpSubVersion(db, fresh.id);
       // 源字幕文本/时间变化 → 相关译文转待复核（同事务，与采纳原子一致）
       syncTranslations(db, fresh.id);
+      // 已关闭复核意见的相交字幕快照漂移 → 待复核（同事务）
+      syncComments(db, fresh.id);
       db.prepare(
         `UPDATE revisions SET status = 'accepted', accepted_at = datetime('now'),
            accepted_sub_version = ? WHERE id = ?`
@@ -1240,6 +1253,8 @@ function createApp(db) {
       // 被删行的说话人归属同样留作历史，新行待标注（不按展示序号转移）。
       syncTranslations(db, fresh.id);
       syncAttributions(db, fresh.id);
+      // 逐词改时/字幕行更替后：已关闭意见的相交字幕快照漂移 → 待复核
+      syncComments(db, fresh.id);
       db.prepare(
         `UPDATE word_revisions SET status = 'confirmed', confirmed_at = datetime('now'),
            confirmed_sub_version = ? WHERE id = ?`
@@ -2337,6 +2352,211 @@ function createApp(db) {
     const batch = loadBatch(db, p.id, Number(req.params.bid));
     if (!batch) return res.status(404).json({ error: `交付批次 ${req.params.bid} 不存在` });
     res.json(batch);
+  });
+
+  // ---------- 逐词区间复核意见（校对页） ----------
+  //
+  // 意见锚定“逐词导入代次 + 词序区间”，不锚定字幕 ID 或行号：重排拆并、逐词改时、
+  // 字幕行更替后仍显示在相交的当前字幕旁。创建携带当前导入代次、字幕集版本、
+  // 起止词序与非空意见；区间须落在现有逐词转写内。关闭时须有相交的当前字幕，
+  // 并保存其文本/时间/词区间快照；其后这些内容变化 → 自动转待复核，直到再次
+  // 显式关闭；仅锁定或展示顺序变化不触发。重新导入后旧代次意见仅作历史查看，
+  // 不附到新词段且不可关闭/重开。意见写入携带意见版本 version（乐观锁），
+  // 创建或写入所带版本过期均返回当前值且不修改。
+
+  class CommentReject extends Error {
+    constructor(statusCode, payload) {
+      super(payload.error || '复核意见操作被拒绝');
+      this.statusCode = statusCode;
+      this.payload = payload;
+    }
+  }
+
+  /** 意见列表：状态、词段与相交的当前字幕；历史意见（旧导入代次）单独列出，只读 */
+  app.get('/api/projects/:id/comments', (req, res) => {
+    const p = getProject(req, res);
+    if (!p) return;
+    res.json(buildCommentsView(db, p.id));
+  });
+
+  /**
+   * 创建复核意见。
+   *   { import_version, sub_version, word_start, word_end, text }
+   * 201 创建成功；400 形状非法（缺字段/空意见/区间颠倒）；
+   * 409 导入代次或字幕集版本过期（带当前值，不创建）；422 词区间超出当前逐词转写。
+   */
+  app.post('/api/projects/:id/comments', (req, res) => {
+    const p = getProject(req, res);
+    if (!p) return;
+    const parsed = parseCommentBody(req.body);
+    if (!parsed.ok) {
+      return res.status(400).json({ error: '复核意见请求非法，未创建', errors: parsed.errors });
+    }
+    const it = parsed.item;
+    // 创建所带版本（导入代次 / 字幕集版本）过期 → 返回当前值且不修改
+    if (it.import_version !== p.import_version || it.sub_version !== p.sub_version) {
+      const why = [];
+      if (it.import_version !== p.import_version) {
+        why.push(`逐词导入代次已推进：你基于第 ${it.import_version} 代，当前已是第 ${p.import_version} 代`);
+      }
+      if (it.sub_version !== p.sub_version) {
+        why.push(`字幕集已被修改：你基于 v${it.sub_version} 读取，当前已是 v${p.sub_version}`);
+      }
+      return res.status(409).json({
+        error: `${why.join('；')}，请刷新后重新提交`,
+        current: {
+          import_version: p.import_version,
+          sub_version: p.sub_version,
+          word_count: p.words.length,
+          subtitles: p.subtitles,
+        },
+      });
+    }
+    // 区间须落在现有逐词转写内
+    if (p.words.length === 0 || it.word_end >= p.words.length) {
+      return res.status(422).json({
+        error: '词区间超出当前逐词转写范围，未创建',
+        errors: [p.words.length === 0
+          ? '当前项目尚未导入逐词转写，无法锚定词区间'
+          : `词区间 [${it.word_start}, ${it.word_end}] 超出范围（当前共 ${p.words.length} 个词，序号 0..${p.words.length - 1}）`],
+        current: {
+          import_version: p.import_version,
+          sub_version: p.sub_version,
+          word_count: p.words.length,
+        },
+      });
+    }
+    const segment = p.words
+      .filter((w) => w.idx >= it.word_start && w.idx <= it.word_end)
+      .map((w) => ({ idx: w.idx, text: w.text, start_ms: w.start_ms, end_ms: w.end_ms }));
+    const cid = db.transaction(() => {
+      return db.prepare(
+        `INSERT INTO review_comments
+           (project_id, import_version, word_start, word_end, text, sub_version_snapshot, words_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(p.id, p.import_version, it.word_start, it.word_end, it.text,
+        p.sub_version, JSON.stringify(segment)).lastInsertRowid;
+    })();
+    res.status(201).json({
+      comment: loadCommentView(db, p.id, cid),
+      import_version: p.import_version,
+      sub_version: p.sub_version,
+    });
+  });
+
+  /**
+   * 关闭意见：须有相交的当前字幕，并保存其文本/时间/词区间快照。
+   *   { version }（意见版本，乐观锁）
+   * 200 关闭成功（open/review/closed 均可显式关闭，closed 为刷新快照）；
+   * 400 版本字段非法；404 意见不存在；409 意见版本过期（带当前意见，不修改）；
+   * 422 历史意见（旧导入代次，不可关闭）或当前无相交字幕。
+   */
+  app.post('/api/projects/:id/comments/:cid/close', (req, res) => {
+    const p = getProject(req, res);
+    if (!p) return;
+    const parsed = parseVersionBody(req.body);
+    if (!parsed.ok) {
+      return res.status(400).json({ error: '关闭请求非法，未修改', errors: parsed.errors });
+    }
+    const cid = Number(req.params.cid);
+    const row = getComment(db, p.id, cid);
+    if (!row) return res.status(404).json({ error: `复核意见 ${req.params.cid} 不存在` });
+    if (row.status === 'history' || row.import_version !== p.import_version) {
+      return res.status(422).json({
+        error: `复核意见 ${cid} 属于第 ${row.import_version} 代逐词导入（当前第 ${p.import_version} 代），仅作历史查看，不可关闭`,
+        current: { comment: loadCommentView(db, p.id, cid) },
+      });
+    }
+    if (parsed.version !== row.version) {
+      return res.status(409).json({
+        error: `意见版本过期：你基于 v${parsed.version} 操作，当前已是 v${row.version}，请刷新后重试`,
+        current: { comment: loadCommentView(db, p.id, cid) },
+      });
+    }
+    // 关闭时须有相交的当前字幕
+    const intersecting = intersectingSubtitles(p.subtitles, row.word_start, row.word_end);
+    if (intersecting.length === 0) {
+      return res.status(422).json({
+        error: `词区间 [${row.word_start}, ${row.word_end}] 当前没有相交的字幕（可能尚未排版），无法关闭；请先排版生成相交字幕`,
+        current: { comment: loadCommentView(db, p.id, cid), subtitles: p.subtitles },
+      });
+    }
+    const snapshot = snapshotOf(intersecting);
+    try {
+      db.transaction(() => {
+        const info = db.prepare(
+          `UPDATE review_comments
+              SET status = 'closed', version = version + 1, snapshot_json = ?,
+                  closed_at = datetime('now'), closed_sub_version = ?, updated_at = datetime('now')
+            WHERE id = ? AND version = ?`
+        ).run(JSON.stringify(snapshot), p.sub_version, cid, parsed.version);
+        if (info.changes !== 1) {
+          throw new CommentReject(409, {
+            error: `复核意见 ${cid} 在关闭瞬间发生变化，请刷新后重试`,
+            current: { comment: loadCommentView(db, p.id, cid) },
+          });
+        }
+      })();
+    } catch (err) {
+      if (err instanceof CommentReject) return res.status(err.statusCode).json(err.payload);
+      throw err;
+    }
+    res.json({ comment: loadCommentView(db, p.id, cid), sub_version: p.sub_version });
+  });
+
+  /**
+   * 重新打开意见（closed/review → open）。
+   *   { version }（意见版本，乐观锁）
+   * 200 重开成功；400 版本字段非法；404 意见不存在；409 意见版本过期（带当前意见）；
+   * 422 历史意见（不可重开）或意见本就处于待处理。
+   */
+  app.post('/api/projects/:id/comments/:cid/reopen', (req, res) => {
+    const p = getProject(req, res);
+    if (!p) return;
+    const parsed = parseVersionBody(req.body);
+    if (!parsed.ok) {
+      return res.status(400).json({ error: '重新打开请求非法，未修改', errors: parsed.errors });
+    }
+    const cid = Number(req.params.cid);
+    const row = getComment(db, p.id, cid);
+    if (!row) return res.status(404).json({ error: `复核意见 ${req.params.cid} 不存在` });
+    if (row.status === 'history' || row.import_version !== p.import_version) {
+      return res.status(422).json({
+        error: `复核意见 ${cid} 属于第 ${row.import_version} 代逐词导入（当前第 ${p.import_version} 代），仅作历史查看，不可重新打开`,
+        current: { comment: loadCommentView(db, p.id, cid) },
+      });
+    }
+    if (parsed.version !== row.version) {
+      return res.status(409).json({
+        error: `意见版本过期：你基于 v${parsed.version} 操作，当前已是 v${row.version}，请刷新后重试`,
+        current: { comment: loadCommentView(db, p.id, cid) },
+      });
+    }
+    if (row.status === 'open') {
+      return res.status(422).json({
+        error: `复核意见 ${cid} 当前已是待处理状态，无需重新打开`,
+        current: { comment: loadCommentView(db, p.id, cid) },
+      });
+    }
+    try {
+      db.transaction(() => {
+        const info = db.prepare(
+          `UPDATE review_comments
+              SET status = 'open', version = version + 1, updated_at = datetime('now')
+            WHERE id = ? AND version = ?`
+        ).run(cid, parsed.version);
+        if (info.changes !== 1) {
+          throw new CommentReject(409, {
+            error: `复核意见 ${cid} 在重新打开瞬间发生变化，请刷新后重试`,
+            current: { comment: loadCommentView(db, p.id, cid) },
+          });
+        }
+      })();
+    } catch (err) {
+      if (err instanceof CommentReject) return res.status(err.statusCode).json(err.payload);
+      throw err;
+    }
+    res.json({ comment: loadCommentView(db, p.id, cid), sub_version: p.sub_version });
   });
 
   return app;

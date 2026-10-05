@@ -21,6 +21,7 @@
 - **译审术语对照表（本轮新增）**：译审按**目标语言**维护「源词 → 规定译法」对照表，**整表修改**（整体替换词条）并携带读取时**术语版本**（未配置传 `0`），过期返回 `409` 与当前表；词与译法均为**非空文本**（无首尾空白、≤100 字），**同一语言源词不得重复**，允许提交空数组清空该语言术语。按**当前原文字幕文本精确匹配**源词（字面子串）：每条命中源词的译文都**必须包含对应规定译法**，**一行命中多词时每个规定译法都须满足**；**未配置术语的语言完全不受影响**。另有只读缺失查询，按**语言、字幕 ID 与源词**逐条列出缺失译法并附当前术语版本（无译文行也列出）。**译文即使缺失规定译法仍可保存供修正**（保存响应与并列视图附 `term_issues`），**术语变更不改变既有译文的 current/review 状态**。**单语言译文导出、多语言同版交付与译文署名版导出**在**原有事务内读取当前术语**并核对：任一缺失逐行（多语交付按语言+行，署名导出行内带 `translation_term_missing`）报错且**不生成快照、不消耗版本**；**原文导出、现有译文读写约定与旧导出快照保持兼容**（术语收紧后旧快照仍可下载且内容不变）。
 - **重排后历史译文找回（本轮新增）**：重排删除源行后，译文按既有约定留作**历史**（绝不按序号自动挪用）。校对者可先按语言查询当前**缺译行**的历史候选及**匹配依据**（只读）：只有与当前行属于**同一次逐词导入**（导入代次 `import_version` 一致）且**词区间**与**源字幕文本**均一致的候选**可恢复**；**重新导入前的旧代次历史**、**无法确认导入归属的旧库历史**（`src_import_id` 为空）同样列出但只能查看、不能恢复。恢复请求携带读取时**字幕集版本** `sub_version`、**规则版本** `rules_version`、**目标行**及**候选译文 ID + 版本**，可一次选择多行；服务端在**同一事务内**重新核对目标仍缺译、候选三要素仍匹配以及候选文本满足**现行字数/字速**规则，任一失效都**按行说明原因且整组不写**。成功后为每行写成一条**普通 current 译文**（新版本从 1 开始），**原历史记录保留不改**、**不推进 `sub_version`**、**旧导出快照不变**；术语缺失仍按现有译文视图 `term_issues` 提示并继续阻止导出；恢复出的译文可继续使用逐行保存/确认、整批回填、单语言导出与多语交付等既有操作。
 - **两批交付差异对照（本轮新增，只读）**：片方审阅同一项目两次交付的实际字幕差异时，输入**基准批次**与**目标批次** ID（`GET …/deliveries/diff?base_id=&target_id=`），返回**原文及两批语言并集**的对照。只在一侧出现的语言标**新增（added）/移除（removed）**；双方都有的文件以各自**冻结的 WebVTT** 为准，按字幕**起止时间构成的区段**比较**实际显示文本**，列出差异区段的**起止毫秒、两侧文本与对应文件版本**：**拆分、合并或整体移时按时间区段自然对齐，绝不按行号配对**；时间空档记 `null`、空白字幕记 `""`，**空白与字幕的转换不漏报**；相邻差异区段在两侧各自文本跨边界均未变时**合并**。文件快照完好时，**同批比较返回空差异**。批次**不存在或不属于该项目时明确拒绝**；任一文件**快照缺失或格式损坏**（签名/时间戳/时间轴/cue 数不符）时指出**批次和文件**，**整份报告失败、不返回部分结果**。查询**只读**，不受当前字幕、译文或术语修改影响，原有交付与下载约定保持兼容。
+- **逐词区间复核意见（本轮新增）**：校对页管理锚定**逐词区间**的复核意见。校对者以**当前导入代次 `import_version`、字幕集版本 `sub_version`、起止词序与非空意见**创建记录，区间须落在现有逐词转写内；列表逐条返回**意见状态、词段与相交的当前字幕**。意见锚定**导入代次 + 词序**：重排拆并、逐词改时及字幕行更替后仍显示在相交字幕旁，**不按字幕 ID 或行号迁移**。**关闭**时须有相交的当前字幕，并保存其**文本、时间与词区间快照**；其后这些内容变化则自动转**待复核**，直到再次显式关闭；**锁定或仅展示顺序变化不触发**。**重新导入**后旧意见仅作**历史**查看，不附到新词段且不可关闭/重开。意见写入携带**意见版本**，创建或写入所带版本过期均返回当前值且不修改。页面支持查看、创建、关闭与重新打开。
 
 ## 启动
 
@@ -75,6 +76,7 @@ Compose 默认把 SQLite 挂到命名卷 `subtitle-data` 持久化（含所有�
 12. **译审术语对照表（本轮新增）**：通过 HTTP 维护（见「译审术语对照表」一节与 `examples/glossaries-api.sh`）：`PUT …/glossaries/:lang` 整表提交 `{version, terms:[{source,target}]}`（未配置传 `version:0`）；保存译文或并列查询会显示每行 `term_issues`，`GET …/glossaries/:lang/missing` 按语言/字幕 ID/源词列出缺失；单语言导出、多语交付与译文署名导出在原事务内按当前术语核对，缺失逐行报错且不生成快照；术语变更不改译文状态、不影响旧快照。
 13. **重排后历史译文找回（本轮新增）**：重排后出现缺译行时，`GET …/translations/:lang/recovery-candidates` 查看每行历史候选与匹配依据；只有**同一次逐词导入**（`import_version` 一致）且**词区间、源字幕文本均一致**的候选可恢复（重新导入留下的旧代次历史、归属未知的旧历史仅供查看）。`POST …/translations/:lang/recover` 携带 `{sub_version, rules_version, items:[{subtitle_id, cue_version, translation_id, version}]}` 一次可恢复多行，事务内重核目标仍缺译、候选匹配与现行字数/字速，任一失效按行说明且整组不写；成功写成普通 current 译文（新译文版本从 1 开始），历史记录与旧导出快照不改、不推进 `sub_version`，术语缺失仍提示并阻止导出。HTTP 流程见 `examples/translation-recovery-api.sh`。
 14. **片方审阅两批交付差异（本轮新增，只读）**：`GET /api/projects/:id/deliveries/diff?base_id=<批次>&target_id=<批次>` 输入同一项目两个交付批次，以各自**冻结 WebVTT** 按字幕起止时间区段比较实际显示文本，返回原文及两批语言并集的对照：单侧语言标 `added`/`removed`；双方都有的文件列出差异区段起止毫秒、两侧文本（空档 `null`、空白字幕 `""`）与各自文件版本；拆分/合并/整体移时按时间对齐不按行号配对，相邻且两侧文本均未变的区段合并；同批比较返回空差异。批次不存在或不属于项目明确拒绝（`404`）；快照缺失/格式损坏指出批次与文件、整份报告失败不返回部分结果（`500`）。查询只读，不受当前字幕、译文或术语修改影响，旧交付与下载约定保持兼容。HTTP 流程见 `examples/delivery-diff-api.sh`。
+15. **逐词区间复核意见（本轮新增）**：在左侧 ⑨ 面板填起止词序与意见「创建意见」（自动携带当前导入代次与字幕集版本），右侧「复核意见（逐词区间）」面板逐条查看状态、词段与相交的当前字幕，可「✓ 关闭」（保存相交字幕快照）或「↩ 重新打开」；相交字幕的文本/时间/词区间再变化时意见自动转**待复核**，核对后再次关闭即可。HTTP 流程见 `examples/comments-api.sh`。
 
 ## API 摘要
 
@@ -130,6 +132,10 @@ Compose 默认把 SQLite 挂到命名卷 `subtitle-data` 持久化（含所有�
 | `GET` | `/api/projects/:id/glossaries/:lang/missing` | **术语缺失查询**：按语言/字幕 ID/源词逐条列出缺失规定译法（含无译文行）与当前 `glossary_version` |
 | `GET` | `/api/projects/:id/translations/:lang/recovery-candidates` | **历史译文找回候选（只读）**：列出该语言当前缺译行的全部历史候选与匹配依据（`same_import`/`same_word_span`/`same_text`、`recoverable` 与中文原因），附当前 `import_version`/`sub_version`/`rules_version` |
 | `POST` | `/api/projects/:id/translations/:lang/recover` | **组级恢复历史译文**：`{sub_version, rules_version, items:[{subtitle_id, cue_version, translation_id, version}]}`，可一次多行；事务内重核目标仍缺译、候选三要素与现行字数/字速，任一失效按行返回原因且整组不写；成功 `201` 写成普通 current 译文（新版本从 1 开始），历史行保留不改 |
+| `GET` | `/api/projects/:id/comments` | **复核意见列表**：逐条返回状态（`open`/`closed`/`review`/`history`）、词段（当前词段 + 创建时快照）与相交的当前字幕；历史意见（旧导入代次）单独列出，附当前 `import_version`/`sub_version` 与各状态计数 |
+| `POST` | `/api/projects/:id/comments` | **创建复核意见**：`{import_version, sub_version, word_start, word_end, text}`；区间须落在现有逐词转写内；形状非法 `400`、词区间越界 `422`、导入代次/字幕集版本过期 `409`（均返回当前值且不创建） |
+| `POST` | `/api/projects/:id/comments/:cid/close` | **关闭意见**：`{version}`（意见版本）；须有相交的当前字幕并保存其文本/时间/词区间快照；版本过期 `409`、历史意见或无相交字幕 `422`（返回当前值且不修改） |
+| `POST` | `/api/projects/:id/comments/:cid/reopen` | **重新打开意见**：`{version}`；closed/review → open；版本过期 `409`、历史意见或已是待处理 `422`（返回当前值且不修改） |
 
 修订请求与核对说明：
 
@@ -593,12 +599,60 @@ WEBVTT
 
 完整 curl 示例：`examples/translation-recovery-api.sh`（细分排版→存译文→合并删除留历史→重新细分→候选查询（含不可恢复候选依据）→非法/漂移/错配各类拒绝→两行组级恢复→重复恢复被拒→重新导入换代次后旧历史不可恢复）。
 
+## 逐词区间复核意见（创建 → 关闭 → 漂移待复核 → 历史）
+
+校对页管理锚定**逐词区间**的复核意见：意见针对的是「词序列上的一段」，而不是某条字幕行——因此重排拆并、逐词改时、字幕行更替（旧行删除、新行新 ID）之后，意见仍按词区间显示在**相交的当前字幕**旁，**绝不按字幕 ID 或展示行号迁移**。
+
+### 锚定与状态机
+
+- **锚定**：每条意见记录创建时的**逐词导入代次** `import_version` 与**词序区间** `[word_start, word_end]`（词序号，与逐词修正同一套序号）。相交判定：字幕词区间与意见词区间有重叠即为相交。
+- **状态机**：
+
+| 状态 | 含义 | 迁移 |
+|---|---|---|
+| `open` | 待处理（创建后尚未关闭） | 显式关闭 → `closed` |
+| `closed` | 已关闭（关闭时保存相交字幕快照） | 相交字幕的文本/时间/词区间变化 → 自动 `review` |
+| `review` | 待复核（关闭后相交字幕内容又变化） | 只能由校对者再次显式关闭 → `closed`；或重新打开 → `open` |
+| `history` | 历史（重新导入后的旧代次意见） | 终态：仅查看，不可关闭/重开 |
+
+- **关闭快照**：关闭时必须有**相交的当前字幕**（尚未排版覆盖该词段时无法关闭），并保存相交字幕的**文本、起止毫秒与词区间**快照（按词序排序，不含字幕 ID/展示序号/锁定标记）。此后单条编辑、批量修订采纳、逐词修正确认、重新排版导致这些内容变化时，对账（`syncComments`，与译文 `syncTranslations` 同一调用时机）自动把意见转 `review`；**仅锁定切换或展示顺序变化不触发**（快照不含这些维度）。
+- **重新导入**：`POST …/import` 推进导入代次后，旧代次意见全部转 `history`——列表中单独成区**仅作历史查看**（`words` 为 `null`、`subtitles` 为 `[]`，创建时的词段快照 `words_snapshot` 与关闭快照保留供查），**不附到新词段、不可关闭/重新打开**；新代次可照常创建新意见。
+- **乐观锁**：创建携带当前 `import_version` 与 `sub_version`；关闭/重新打开携带**意见版本** `version`（每次写入 +1）。**创建或写入所带版本过期均返回 `409` 与当前值，且不修改任何数据**。
+
+### API 流程
+
+1. **创建** `POST /api/projects/:id/comments`
+   `{"import_version":1,"sub_version":1,"word_start":0,"word_end":1,"text":"「你好世界」连读略快"}`
+   - `201` 创建成功（状态 `open`、意见版本 `1`），响应含完整意见视图。
+   - `400` 形状非法（缺字段、空意见、区间颠倒、非法词序）；`422` 词区间超出当前逐词转写（含尚未导入）；
+     `409` 导入代次或字幕集版本过期（`current` 返回当前代次/字幕集版本/词数/字幕，不创建）。
+2. **列表** `GET /api/projects/:id/comments`（只读）
+   返回 `import_version`/`sub_version`（供创建携带）、`counts`（各状态计数）、`comments`（当前代次意见，按创建顺序）与 `history`（旧代次，倒序）。每条意见含：
+   - `status`/`version`/`text`/`word_start`/`word_end`；
+   - `words`：当前词段（词序/文本/起止；历史意见为 `null`）；`words_snapshot`：创建时词段快照；
+   - `subtitles`：**相交的当前字幕**（id/idx/词区间/文本/起止/锁定/行版本；历史意见为 `[]`）；
+   - `snapshot`：关闭时相交字幕快照（未关闭过为 `null`）与 `closed_at`/`closed_sub_version`。
+3. **关闭** `POST …/comments/:cid/close`，`{"version":1}`
+   - `200` 关闭成功：状态 `closed`、意见版本 +1、`snapshot` 为当前相交字幕快照；
+   - `409` 意见版本过期（`current.comment` 为当前意见，不修改）；`422` 历史意见（不可关闭）或当前无相交字幕。
+   - `open`/`review`/`closed` 状态都可显式关闭（`closed` 下为刷新快照的幂等操作）。
+4. **重新打开** `POST …/comments/:cid/reopen`，`{"version":2}`
+   - `200`：`closed`/`review` → `open`、意见版本 +1（保留关闭快照供对照）；
+   - `409` 意见版本过期；`422` 历史意见或意见本就处于 `open`。
+
+### 与既有功能的关系
+
+- 意见是**校对批注**，不改动词、切点、字幕、译文与规则，也**不推进** `sub_version`；导出（原文/译文/署名/交付）不读取意见，**既有导出快照与全部既有接口行为保持不变**。
+- 页面：左侧 ⑨ 面板创建（自动携带当前导入代次与字幕集版本），右侧「复核意见（逐词区间）」面板查看/关闭/重新打开，历史意见单独成区只读。
+
+完整 curl 示例：`examples/comments-api.sh`（创建→非法/越界/版本过期→列表（词段+相交字幕）→关闭快照→文本变化转待复核/锁定不触发→重开与再关闭→重排拆并后仍锚定词区间→重新导入转历史且不可关闭→新代次再创建）。
+
 
 ## 目录结构
 
 ```
 server.js            入口：初始化 SQLite、播种演示数据、启动 HTTP
-src/db.js            连接与建表（projects[含 sub_version/attribution_version/import_version]/words/shots/rules/subtitles/exports/revisions/revision_items/word_revisions/word_revision_items/translations[含 src_import_id]/translation_exports/delivery_batches/delivery_files/translation_batches/translation_batch_items/speakers/attributions/attributed_exports/glossaries/glossary_terms；旧库迁移补 attribution_version/import_version/src_import_id）
+src/db.js            连接与建表（projects[含 sub_version/attribution_version/import_version]/words/shots/rules/subtitles/exports/revisions/revision_items/word_revisions/word_revision_items/translations[含 src_import_id]/translation_exports/delivery_batches/delivery_files/translation_batches/translation_batch_items/speakers/attributions/attributed_exports/glossaries/glossary_terms/review_comments；旧库迁移补 attribution_version/import_version/src_import_id）
 src/layout.js        排版引擎（纯函数）：切点分析 → 分段 → 定时 → 结构自检
 src/validate.js      导入与编辑校验
 src/revision.js      批量字幕修订提议：请求解析 + 整组候选核对（词区间/时间/切点/相邻/规则/版本）
@@ -610,9 +664,10 @@ src/delivery-diff.js 片方审阅两批交付差异（只读）：批次归属�
 src/speaker.js       说话人标注：名册/显示名校验/归属批量与单行乐观锁核对/删除行历史对账/署名版导出事务核对
 src/glossary.js      译审术语表：整表替换与乐观锁/词条校验（非空/同语言源词唯一）/源词精确匹配核对/缺失查询与导出/交付/署名导出的术语闸门
 src/translation-recovery.js 重排后历史译文找回：缺译行候选视图（同导入代次+词区间+源文三要素匹配依据）/组级恢复请求解析与事务内重核（目标仍缺译/候选失效/现行字数字速，整组原子）
+src/comment.js       逐词区间复核意见：请求解析/相交字幕计算与关闭快照/字幕变更对账（closed→review、旧代次→history）/列表视图（词段+相交字幕）
 src/vtt.js           WebVTT 序列化（普通正文与署名版 <v 显示名> 说话人标签）+ 严格解析（时间戳/cue/时间轴校验）与按时间区段的字幕文本差异（区段切分+相邻合并）
 src/routes.js        Express API
-public/              前端（原生 HTML/CSS/JS 单页，含字幕修订、逐词修正、多语言译文与说话人标注面板）
+public/              前端（原生 HTML/CSS/JS 单页，含字幕修订、逐词修正、多语言译文、说话人标注与逐词区间复核意见面板）
 examples/sample.json 示例转写与切点
 examples/revisions-api.sh 批量字幕修订提议的完整 curl 调用示例
 examples/word-revisions-api.sh 逐词时间修正（提交→预览→确认）的完整 curl 调用示例
@@ -623,6 +678,7 @@ examples/delivery-diff-api.sh 片方审阅两批交付差异（两批交付含�
 examples/speakers-api.sh 说话人标注与署名版导出（名册→归属→重排身份保持→原文/译文署名快照→兼容普通导出）的完整 curl 调用示例
 examples/glossaries-api.sh 译审术语对照表（建表/乐观锁→缺失查询→单语言导出/多语交付/译文署名导出三类闸门→旧快照兼容）的完整 curl 调用示例
 examples/translation-recovery-api.sh 重排后历史译文找回（候选查看与匹配依据→非法/漂移/错配拒绝→组级恢复→重新导入后旧历史不可恢复）的完整 curl 调用示例
-test/                node:test 单元 + API 集成测试（revision / word-revision / translation / translation-batch / translation-recovery / delivery / delivery-diff / speaker / glossary 覆盖九类流程）
+examples/comments-api.sh 逐词区间复核意见（创建→关闭快照→漂移待复核→重开/再关闭→重排锚定→重新导入历史）的完整 curl 调用示例
+test/                node:test 单元 + API 集成测试（revision / word-revision / translation / translation-batch / translation-recovery / delivery / delivery-diff / speaker / glossary / comment 覆盖十类流程）
 Dockerfile / docker-compose.yml
 ```

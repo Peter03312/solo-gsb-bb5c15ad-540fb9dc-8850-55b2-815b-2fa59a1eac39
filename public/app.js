@@ -9,6 +9,7 @@ const state = {
   trLang: null,       // 当前译文语言
   trView: null,       // 该语言并列查询视图
   spView: null,       // 说话人归属并列视图（载入后存在）
+  cmView: null,       // 逐词区间复核意见视图（随项目载入）
 };
 
 // ---------- 工具 ----------
@@ -80,6 +81,8 @@ async function loadProject(id) {
   else $('#tr-panel').classList.add('hidden');
   // 归属面板若已载入，则随字幕集刷新重新拉取（保持归属版本/行版本最新）
   if (state.spView) loadSpeakers(true);
+  // 复核意见随字幕集刷新（重排/编辑/词修正后相交字幕与状态可能变化）
+  loadComments();
   renderAll();
 }
 
@@ -696,6 +699,7 @@ async function saveCue(cue) {
     state.project.subtitles[i] = body.subtitle;
     state.edits.delete(cue.id);
     renderSubtitles();
+    loadComments();
     toast(`字幕 #${cue.idx + 1} 已保存（v${body.subtitle.version}）`);
   } else if (status === 409) {
     toast(body.error + '，已刷新当前内容', true);
@@ -715,6 +719,7 @@ async function toggleLock(cue) {
     const i = state.project.subtitles.findIndex((s) => s.id === cue.id);
     state.project.subtitles[i] = body.subtitle;
     renderSubtitles();
+    loadComments();
     toast(body.subtitle.locked ? `字幕 #${cue.idx + 1} 已锁定，重排不再改动` : `字幕 #${cue.idx + 1} 已解锁`);
   } else if (status === 409) {
     toast(body.error + '，已刷新当前内容', true);
@@ -762,6 +767,7 @@ async function runLayout() {
     state.project.subtitles = body.subtitles;
     state.edits.clear();
     renderSubtitles();
+    loadComments();
     toast(`排版完成：${body.subtitles.length} 条字幕（字幕集 v${body.sub_version}）`);
   } else if (status === 409) {
     toast(body.error, true);
@@ -1428,4 +1434,197 @@ $('#btn-sp-create').addEventListener('click', createSpeaker);
 $('#btn-sp-load').addEventListener('click', () => loadSpeakers(false));
 $('#btn-sp-export-src').addEventListener('click', () => exportAttributed(false));
 $('#btn-sp-export-tr').addEventListener('click', () => exportAttributed(true));
+
+// ---------- 逐词区间复核意见 ----------
+//
+// 意见锚定“导入代次 + 词序区间”（不按字幕 ID/行号）：列表随字幕集刷新，
+// 每条显示状态、词段与相交的当前字幕；关闭/重新打开携带意见版本（乐观锁）。
+
+const CM_STATUS = {
+  open: ['待处理', 'cm-open'],
+  closed: ['已关闭', 'cm-closed'],
+  review: ['待复核', 'cm-review'],
+  history: ['历史', 'cm-history'],
+};
+
+async function loadComments() {
+  const p = state.project;
+  if (!p) { state.cmView = null; renderComments(); return; }
+  const { status, body } = await api(`/api/projects/${p.id}/comments`);
+  if (status !== 200) { toast(body?.error || '加载复核意见失败', true); return; }
+  state.cmView = body;
+  renderComments();
+}
+
+function cmWordText(c) {
+  const seg = c.words || c.words_snapshot || [];
+  return seg.map((w) => w.text).join('');
+}
+
+function renderComments() {
+  const view = state.cmView;
+  const box = $('#cm-list');
+  const hbox = $('#cm-history');
+  box.innerHTML = '';
+  hbox.innerHTML = '';
+  if (!view || !state.project) {
+    $('#cm-stats').textContent = '';
+    return;
+  }
+  const n = view.counts;
+  $('#cm-stats').textContent =
+    `（待处理 ${n.open} · 待复核 ${n.review} · 已关闭 ${n.closed} · 历史 ${n.history}）`;
+  box.appendChild(renderCommentGroup(view.comments, false,
+    '尚无复核意见：在左侧 ⑨ 面板按词序区间创建。'));
+  hbox.appendChild(renderCommentGroup(view.history, true,
+    '无历史意见（重新导入后旧代次意见会列在这里，仅查看）。'));
+}
+
+function renderCommentGroup(list, isHistory, emptyText) {
+  const frag = document.createDocumentFragment();
+  if (!list || list.length === 0) {
+    const div = document.createElement('div');
+    div.className = 'empty';
+    div.textContent = emptyText;
+    frag.appendChild(div);
+    return frag;
+  }
+  for (const c of list) frag.appendChild(renderComment(c, isHistory));
+  return frag;
+}
+
+function renderComment(c, isHistory) {
+  const row = document.createElement('div');
+  const [label, cls] = CM_STATUS[c.status] || [c.status, ''];
+  row.className = 'cm-item' + (c.status === 'review' ? ' needs-review' : '') +
+    (c.status === 'closed' ? ' is-closed' : '');
+
+  const head = document.createElement('div');
+  head.className = 'cm-head';
+  const tag = document.createElement('span');
+  tag.className = `status-tag ${cls}`;
+  tag.textContent = label;
+  const title = document.createElement('div');
+  title.className = 'cm-title';
+  title.innerHTML =
+    `<strong>#${c.id}</strong> 词 ${c.word_start}–${c.word_end}「${escapeHtml(cmWordText(c))}」` +
+    `<span class="rev-note">意见 v${c.version} · 第 ${c.import_version} 代导入 · ${c.created_at}</span>`;
+  head.append(tag, title);
+
+  const text = document.createElement('div');
+  text.className = 'cm-text';
+  text.textContent = c.text;
+
+  const subs = document.createElement('div');
+  subs.className = 'cm-subs';
+  if (isHistory) {
+    subs.innerHTML = '<span class="rev-note">旧导入代次意见，仅作历史查看：不附到新词段，不可关闭/重新打开。</span>';
+  } else if (c.subtitles.length === 0) {
+    subs.innerHTML = '<span class="rev-note">当前无相交字幕（尚未排版覆盖该词段），须先排版才能关闭。</span>';
+  } else {
+    subs.innerHTML = '相交字幕：' + c.subtitles.map((s) =>
+      `<span class="cm-cue">#${s.idx + 1}「${escapeHtml(s.text)}」` +
+      `<i>${fmtMs(s.start_ms)}–${fmtMs(s.end_ms)} · 词${s.word_start}–${s.word_end}${s.locked ? ' · 🔒' : ''}</i></span>`
+    ).join('');
+  }
+
+  row.append(head, text, subs);
+
+  if (!isHistory && c.snapshot) {
+    const snap = document.createElement('div');
+    snap.className = 'cm-snapshot';
+    snap.innerHTML = `关闭快照（${c.closed_at}，字幕集 v${c.closed_sub_version}）：` +
+      c.snapshot.map((s) =>
+        `<span class="cm-cue"><i>词${s.word_start}–${s.word_end}</i>「${escapeHtml(s.text)}」` +
+        `<i>${fmtMs(s.start_ms)}–${fmtMs(s.end_ms)}</i></span>`
+      ).join('');
+    row.appendChild(snap);
+  }
+
+  if (!isHistory) {
+    const ops = document.createElement('div');
+    ops.className = 'ops';
+    if (c.status === 'open' || c.status === 'review') {
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'small';
+      closeBtn.textContent = '✓ 关闭';
+      closeBtn.title = '关闭须当前有相交字幕；保存其文本/时间/词区间快照';
+      closeBtn.onclick = () => closeComment(c);
+      ops.appendChild(closeBtn);
+    }
+    if (c.status === 'closed' || c.status === 'review') {
+      const reopenBtn = document.createElement('button');
+      reopenBtn.className = 'small secondary';
+      reopenBtn.textContent = '↩ 重新打开';
+      reopenBtn.onclick = () => reopenComment(c);
+      ops.appendChild(reopenBtn);
+    }
+    row.appendChild(ops);
+  }
+  return row;
+}
+
+async function createComment() {
+  const p = state.project;
+  if (!p) return toast('请先选择项目', true);
+  const ws = $('#cm-word-start').value;
+  const we = $('#cm-word-end').value;
+  if (ws === '' || we === '') return toast('请填写起止词序', true);
+  const payload = {
+    import_version: p.import_version,
+    sub_version: p.sub_version,
+    word_start: Number(ws),
+    word_end: Number(we),
+    text: $('#cm-text').value,
+  };
+  const { status, body } = await api(`/api/projects/${p.id}/comments`, {
+    method: 'POST', body: JSON.stringify(payload),
+  });
+  if (status === 201) {
+    toast(`意见 #${body.comment.id} 已创建（词 ${body.comment.word_start}–${body.comment.word_end}）`);
+    $('#cm-text').value = '';
+    await loadComments();
+  } else if (status === 409) {
+    toast(body.error + '，已刷新当前值', true);
+    await loadProject(p.id);
+  } else {
+    toast((body?.errors || [body?.error || '创建失败']).join('；'), true);
+  }
+}
+
+async function closeComment(c) {
+  const p = state.project;
+  const { status, body } = await api(`/api/projects/${p.id}/comments/${c.id}/close`, {
+    method: 'POST', body: JSON.stringify({ version: c.version }),
+  });
+  if (status === 200) {
+    toast(`意见 #${c.id} 已关闭（保存相交字幕快照，意见 v${body.comment.version}）`);
+    await loadComments();
+  } else if (status === 409) {
+    toast(body.error + '，已刷新当前值', true);
+    await loadComments();
+  } else {
+    toast(body?.error || '关闭失败', true);
+    if (status === 422) await loadComments();
+  }
+}
+
+async function reopenComment(c) {
+  const p = state.project;
+  const { status, body } = await api(`/api/projects/${p.id}/comments/${c.id}/reopen`, {
+    method: 'POST', body: JSON.stringify({ version: c.version }),
+  });
+  if (status === 200) {
+    toast(`意见 #${c.id} 已重新打开（待处理，意见 v${body.comment.version}）`);
+    await loadComments();
+  } else if (status === 409) {
+    toast(body.error + '，已刷新当前值', true);
+    await loadComments();
+  } else {
+    toast(body?.error || '重新打开失败', true);
+    if (status === 422) await loadComments();
+  }
+}
+
+$('#btn-cm-create').addEventListener('click', createComment);
 

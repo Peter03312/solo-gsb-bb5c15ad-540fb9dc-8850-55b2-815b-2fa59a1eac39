@@ -319,6 +319,34 @@ CREATE TABLE IF NOT EXISTS glossary_terms (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_terms_source
   ON glossary_terms(glossary_id, source);
+
+-- 逐词区间复核意见（校对页）：锚定“逐词导入代次 + 词序区间”，不锚定字幕 ID 或行号。
+-- 重排拆并、逐词改时、字幕行更替后，意见仍按词区间显示在相交的当前字幕旁。
+--   open    待处理（创建后尚未关闭）
+--   closed  已关闭（关闭时保存相交当前字幕的文本/时间/词区间快照 snapshot_json）
+--   review  待复核（已关闭但相交字幕的文本/时间/词区间随后变化；仅锁定或展示顺序
+--           变化不触发；只能由校对者再次显式关闭回到 closed）
+--   history 历史（重新导入后旧代次意见仅作历史查看：不附到新词段、不可关闭/重开）
+-- 意见版本 version 为行级乐观锁：关闭/重新打开必须携带读取时的版本。
+CREATE TABLE IF NOT EXISTS review_comments (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  import_version INTEGER NOT NULL,           -- 创建时锚定的逐词导入代次
+  word_start     INTEGER NOT NULL,           -- 意见词区间 [word_start, word_end]（词序号）
+  word_end       INTEGER NOT NULL,
+  text           TEXT NOT NULL,              -- 非空复核意见
+  status         TEXT NOT NULL DEFAULT 'open', -- open / closed / review / history
+  version        INTEGER NOT NULL DEFAULT 1, -- 意见版本（关闭/重新打开携带，乐观锁）
+  sub_version_snapshot INTEGER NOT NULL,     -- 创建时读取的字幕集版本
+  words_json     TEXT NOT NULL,              -- 创建时词段快照（重新导入后供历史查看）
+  snapshot_json  TEXT,                       -- 关闭时相交字幕快照（词区间/文本/起止，按词序）
+  closed_at      TEXT,
+  closed_sub_version INTEGER,                -- 最近一次关闭时的字幕集版本
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_review_comments_project
+  ON review_comments(project_id, status);
 `;
 
 const DEFAULT_RULES = { max_chars: 30, min_duration_ms: 800, max_cps: 20 };

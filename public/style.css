@@ -211,6 +211,35 @@ button.danger { background: transparent; border: 1px solid var(--danger); color:
 .wr-candidate .wr-cue-new .meta { color: var(--accent); }
 
 
+/* 逐词区间复核意见 */
+.cm-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.cm-item {
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 12px; font-size: 13px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.cm-item.needs-review { border-color: var(--danger); }
+.cm-item.is-closed { border-color: var(--ok); }
+.cm-item .cm-head { display: flex; align-items: baseline; gap: 8px; }
+.cm-item .cm-title { flex: 1; }
+.cm-item .cm-title .rev-note { margin-left: 8px; }
+.cm-item .cm-text { line-height: 1.6; word-break: break-all; white-space: pre-wrap; }
+.cm-item .cm-subs, .cm-item .cm-snapshot {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  color: var(--muted); font-size: 12px;
+}
+.cm-item .cm-cue {
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 2px 8px; background: rgba(79,140,255,.08);
+}
+.cm-item .cm-cue i { color: var(--muted); font-style: normal; margin-left: 6px; font-size: 11px; }
+.cm-item .cm-snapshot { opacity: .85; }
+.cm-item .ops { display: flex; gap: 6px; justify-content: flex-end; }
+.status-tag.cm-open { background: rgba(79,140,255,.18); color: var(--accent); }
+.status-tag.cm-closed { background: rgba(81,207,138,.18); color: var(--ok); }
+.status-tag.cm-review { background: rgba(255,107,107,.18); color: var(--danger); }
+.status-tag.cm-history { background: rgba(139,150,173,.18); color: var(--muted); }
+
 @media (max-width: 1100px) {
   main { grid-template-columns: 1fr; }
   .cue-row { grid-template-columns: 28px 80px 80px 1fr 100px 130px; }

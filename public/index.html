@@ -136,6 +136,21 @@
         <ul id="sp-export-list" class="export-list"></ul>
         <p class="hint">署名版另存为<strong>不可变快照</strong>（WebVTT 说话人标签 <code>&lt;v 名称&gt;…&lt;/v&gt;</code>）；普通导出与旧下载内容不变，原文与译文共用时间轴。</p>
       </section>
+      <section class="panel">
+        <h2>⑨ 逐词区间复核意见</h2>
+        <p class="hint">意见锚定<strong>导入代次 + 词序区间</strong>（不按字幕 ID/行号）：重排拆并、逐词改时、字幕行更替后仍显示在相交字幕旁。
+        创建自动携带当前导入代次与字幕集版本；区间须落在现有逐词转写内。关闭时保存相交字幕快照；其后文本/时间/词区间变化自动转<strong>待复核</strong>，
+        直到再次显式关闭；锁定或仅顺序变化不触发。重新导入后旧意见仅作历史查看、不可关闭。</p>
+        <div class="row">
+          <input id="cm-word-start" type="number" min="0" placeholder="起始词序">
+          <input id="cm-word-end" type="number" min="0" placeholder="结束词序">
+        </div>
+        <textarea id="cm-text" rows="3" spellcheck="false" placeholder="复核意见（非空，≤2000 字）"></textarea>
+        <div class="row buttons">
+          <button id="btn-cm-create" class="primary">创建意见</button>
+        </div>
+        <p class="hint">词序号见字幕列表每行「词 x–y」；创建/关闭/重新打开均带版本号，过期会返回当前值。</p>
+      </section>
     </aside>
 
     <section class="content">
@@ -183,6 +198,14 @@
         <ul id="sp-export-list2" class="export-list"></ul>
         <h3>历史归属（原行已删除，留档，不按序号转移）</h3>
         <div id="sp-history" class="sp-history"></div>
+      </div>
+
+      <div class="panel">
+        <h2>复核意见（逐词区间） <span id="cm-stats" class="hint"></span></h2>
+        <p class="hint">意见锚定词序区间，随相交字幕展示；<strong>待复核</strong>表示关闭后相交字幕的文本/时间/词区间又发生了变化，请核对后再次「关闭」。</p>
+        <div id="cm-list" class="cm-list"></div>
+        <h3>历史意见（旧导入代次，仅查看，不附到新词段）</h3>
+        <div id="cm-history" class="cm-list"></div>
       </div>
 
       <div class="panel">
