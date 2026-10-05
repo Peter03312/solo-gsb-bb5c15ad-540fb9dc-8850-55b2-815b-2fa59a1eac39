@@ -136,6 +136,23 @@
         <ul id="sp-export-list" class="export-list"></ul>
         <p class="hint">署名版另存为<strong>不可变快照</strong>（WebVTT 说话人标签 <code>&lt;v 名称&gt;…&lt;/v&gt;</code>）；普通导出与旧下载内容不变，原文与译文共用时间轴。</p>
       </section>
+      <section class="panel">
+        <h2>⑨ 逐词区间复核意见</h2>
+        <p class="hint">意见锚定<strong>导入代次与起止词序</strong>（非字幕 ID/行号）：重排拆并、逐词改时、字幕行更替后仍显示在相交字幕旁。
+        创建携带当前字幕集版本；关闭须有相交字幕并保存其文本/时间/词区间快照，其后这些内容变化自动转<strong>待复核</strong>，
+        仅锁定或顺序变化不触发；重新导入后旧意见仅作历史。</p>
+        <div class="row">
+          <input id="rc-word-start" type="number" min="0" placeholder="起词序" style="width:90px">
+          <input id="rc-word-end" type="number" min="0" placeholder="止词序" style="width:90px">
+          <button id="btn-rc-fill" class="secondary">取全部词</button>
+        </div>
+        <input id="rc-note" type="text" placeholder="说明（可选）">
+        <textarea id="rc-text" rows="3" spellcheck="false" placeholder="非空复核意见…"></textarea>
+        <div class="row buttons">
+          <button id="btn-rc-refresh" class="secondary">⟳ 载入意见</button>
+          <button id="btn-rc-create" class="primary">创建意见</button>
+        </div>
+      </section>
     </aside>
 
     <section class="content">
@@ -183,6 +200,14 @@
         <ul id="sp-export-list2" class="export-list"></ul>
         <h3>历史归属（原行已删除，留档，不按序号转移）</h3>
         <div id="sp-history" class="sp-history"></div>
+      </div>
+
+      <div id="rc-panel" class="panel hidden">
+        <h2>逐词区间复核意见 <span id="rc-import-tag" class="tag"></span> <span id="rc-stats" class="hint"></span></h2>
+        <p class="hint">待处理 / 已关闭 / 待复核 为当前导入代次意见；关闭后相交字幕的文本、时间或词区间变化会自动回到待复核。重新导入前的旧意见列在末尾历史区，仅供查看。</p>
+        <div id="rc-list" class="rc-list"></div>
+        <h3>历史意见（旧导入代次，仅查看，不可关闭/重开）</h3>
+        <div id="rc-history" class="rc-history"></div>
       </div>
 
       <div class="panel">

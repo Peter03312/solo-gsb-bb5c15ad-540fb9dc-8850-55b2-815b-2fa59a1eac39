@@ -271,3 +271,25 @@ button.danger { background: transparent; border: 1px solid var(--danger); color:
 .gl-missing-list { margin: 4px 0 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; }
 .gl-missing-list li { font-size: 12px; list-style: none; }
 .tr-reason.term { color: #8a5a00; }
+
+/* ---------- ⑨ 逐词区间复核意见 ---------- */
+.rc-list, .rc-history { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.rc-card {
+  border: 1px solid #e2e8f0; border-left-width: 4px; border-radius: 8px;
+  padding: 8px 10px; background: #fff; font-size: 13px;
+}
+.rc-open   { border-left-color: #2b6cb0; }
+.rc-resolved { border-left-color: #38a169; }
+.rc-review { border-left-color: #dd6b20; background: #fffaf0; }
+.rc-history { border-left-color: #a0aec0; background: #f7fafc; opacity: 0.85; }
+.rc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.rc-title { font-weight: 600; }
+.rc-actions { margin-left: auto; display: flex; gap: 6px; }
+.rc-tag { border-radius: 10px; padding: 1px 10px; font-size: 12px; }
+.rc-tag-open     { background: #ebf4ff; color: #2b6cb0; }
+.rc-tag-resolved { background: #f0fff4; color: #2f855a; }
+.rc-tag-review   { background: #fffaf0; color: #c05621; border: 1px solid #f6ad55; }
+.rc-tag-history  { background: #edf2f7; color: #718096; }
+.rc-text { margin: 2px 0; }
+.rc-words, .rc-cues { margin-top: 3px; line-height: 1.5; }
+.rc-cue { white-space: normal; }

@@ -9,6 +9,7 @@ const state = {
   trLang: null,       // 当前译文语言
   trView: null,       // 该语言并列查询视图
   spView: null,       // 说话人归属并列视图（载入后存在）
+  rcView: null,       // 逐词区间复核意见视图（载入后存在）
 };
 
 // ---------- 工具 ----------
@@ -65,8 +66,10 @@ async function loadProjects(selectId) {
   state.trLang = null;
   state.trView = null;
   state.spView = null;
+  state.rcView = null;
   $('#tr-panel').classList.add('hidden');
   $('#sp-panel').classList.add('hidden');
+  $('#rc-panel').classList.add('hidden');
   await loadProject(Number(sel.value));
 }
 
@@ -80,6 +83,8 @@ async function loadProject(id) {
   else $('#tr-panel').classList.add('hidden');
   // 归属面板若已载入，则随字幕集刷新重新拉取（保持归属版本/行版本最新）
   if (state.spView) loadSpeakers(true);
+  // 复核意见面板若已载入，也随字幕集刷新（状态可能因重排/编辑/词修正自动变化）
+  if (state.rcView) loadReviewComments(true);
   renderAll();
 }
 
@@ -1428,4 +1433,160 @@ $('#btn-sp-create').addEventListener('click', createSpeaker);
 $('#btn-sp-load').addEventListener('click', () => loadSpeakers(false));
 $('#btn-sp-export-src').addEventListener('click', () => exportAttributed(false));
 $('#btn-sp-export-tr').addEventListener('click', () => exportAttributed(true));
+
+// ---------- ⑨ 逐词区间复核意见 ----------
+
+const RC_STATUS_LABEL = {
+  open: '待处理',
+  resolved: '✓ 已关闭',
+  review: '⚠ 待复核',
+  history: '历史',
+};
+
+async function loadReviewComments(silent = false) {
+  if (!state.project) return;
+  const { status, body } = await api(`/api/projects/${state.project.id}/review-comments`);
+  if (status !== 200) {
+    if (!silent) toast(body?.error || '载入复核意见失败', true);
+    return;
+  }
+  state.rcView = body;
+  $('#rc-panel').classList.remove('hidden');
+  renderReviewComments();
+}
+
+function rcCueSummary(cues) {
+  if (!cues || cues.length === 0) return '<span class="hint">（当前无相交字幕，无法关闭）</span>';
+  return cues.map((c) =>
+    `<span class="rc-cue">#${c.id} ${escapeHtml(c.text)}` +
+    ` <span class="hint">[${c.start_ms},${c.end_ms}] 词${c.word_start}–${c.word_end}${c.locked ? ' 🔒' : ''}</span></span>`
+  ).join('，');
+}
+
+function rcCard(c) {
+  const div = document.createElement('div');
+  div.className = `rc-card rc-${c.status}`;
+  const words = (c.word_segment || []).map((w) =>
+    `${escapeHtml(w.text)}<span class="hint">[${w.start_ms}-${w.end_ms}]</span>`).join(' ');
+  const actions = [];
+  if (c.current_import) {
+    if (c.status === 'open' || c.status === 'review') {
+      actions.push(`<button class="small primary rc-close" data-id="${c.id}" data-version="${c.version}">关闭</button>`);
+    }
+    if (c.status === 'resolved' || c.status === 'review') {
+      actions.push(`<button class="small secondary rc-reopen" data-id="${c.id}" data-version="${c.version}">重新打开</button>`);
+    }
+  }
+  let snapshotHtml = '';
+  if (c.close_snapshot && c.close_snapshot.length) {
+    snapshotHtml = '<div class="hint">关闭时快照：' + c.close_snapshot.map((s) =>
+      `#${s.subtitle_id}「${escapeHtml(s.text)}」[${s.start_ms},${s.end_ms}] 词${s.word_start}–${s.word_end}`
+    ).join('；') + '</div>';
+  }
+  div.innerHTML =
+    `<div class="rc-head">
+       <span class="status-tag rc-tag rc-tag-${c.status}">${RC_STATUS_LABEL[c.status] || c.status}</span>
+       <span class="rc-title">#${c.id} 词${c.word_start}–${c.word_end} · v${c.version} · 导入代次 ${c.import_version}</span>
+       <span class="rc-actions">${actions.join('')}</span>
+     </div>
+     <div class="rc-text">${escapeHtml(c.text)}</div>
+     <div class="rc-words">词段：${words}</div>
+     <div class="rc-cues">相交字幕：${rcCueSummary(c.intersecting_subtitles)}</div>
+     ${snapshotHtml}
+     <div class="hint">${c.note ? `说明：${escapeHtml(c.note)} · ` : ''}${c.created_at}${c.closed_at ? ` · 关闭于 ${c.closed_at}` : ''}${c.reopened_at ? ` · 重开于 ${c.reopened_at}` : ''}</div>`;
+  return div;
+}
+
+function renderReviewComments() {
+  const v = state.rcView;
+  if (!v) return;
+  $('#rc-import-tag').textContent = `导入代次 v${v.import_version} · 字幕集 v${v.sub_version}`;
+  $('#rc-stats').textContent =
+    `（待处理 ${v.counts.open || 0} · 已关闭 ${v.counts.resolved || 0} · 待复核 ${v.counts.review || 0} · 历史 ${v.counts.history || 0}）`;
+  const box = $('#rc-list');
+  box.innerHTML = '';
+  if (v.comments.length === 0) {
+    box.innerHTML = '<div class="empty">当前导入代次尚无复核意见。</div>';
+  } else {
+    v.comments.forEach((c) => box.appendChild(rcCard(c)));
+  }
+  const hist = $('#rc-history');
+  hist.innerHTML = '';
+  if (v.history.length === 0) {
+    hist.innerHTML = '<div class="empty">无</div>';
+  } else {
+    v.history.forEach((c) => hist.appendChild(rcCard(c)));
+  }
+}
+
+async function createReviewComment() {
+  if (!state.project) return;
+  const wordStart = Number($('#rc-word-start').value);
+  const wordEnd = Number($('#rc-word-end').value);
+  const text = $('#rc-text').value.trim();
+  const note = $('#rc-note').value;
+  if (!text) return toast('复核意见不能为空', true);
+  const { status, body } = await api(`/api/projects/${state.project.id}/review-comments`, {
+    method: 'POST',
+    body: JSON.stringify({
+      sub_version: state.project.sub_version,
+      word_start: wordStart,
+      word_end: wordEnd,
+      text,
+      note,
+    }),
+  });
+  if (status === 409) {
+    toast(`${body.error}（已刷新当前值，请重新提交）`, true);
+    await loadProject(state.project.id);
+    return;
+  }
+  if (status !== 201) {
+    toast(`${body?.error || '创建失败'}${body.errors ? '：' + body.errors.join('；') : ''}`, true);
+    return;
+  }
+  toast(`已创建复核意见 #${body.id}（词 ${body.word_start}–${body.word_end}，相交字幕 ${body.intersecting_subtitles.length} 条）`);
+  $('#rc-text').value = '';
+  await loadProject(state.project.id);
+  await loadReviewComments(true);
+}
+
+async function changeReviewComment(id, version, action) {
+  if (!state.project) return;
+  const { status, body } = await api(
+    `/api/projects/${state.project.id}/review-comments/${id}/${action}`,
+    { method: 'POST', body: JSON.stringify({ version }) }
+  );
+  if (status === 409) {
+    toast(`${body.error}（已刷新当前值）`, true);
+    await loadProject(state.project.id);
+    await loadReviewComments(true);
+    return;
+  }
+  if (status !== 200) {
+    toast(`${body?.error || '操作失败'}`, true);
+    await loadReviewComments(true);
+    return;
+  }
+  toast(action === 'close' ? `意见 #${id} 已关闭` : `意见 #${id} 已重新打开`);
+  await loadProject(state.project.id);
+  await loadReviewComments(true);
+}
+
+$('#rc-list').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button.rc-close,button.rc-reopen');
+  if (!btn) return;
+  const action = btn.classList.contains('rc-close') ? 'close' : 'reopen';
+  changeReviewComment(Number(btn.dataset.id), Number(btn.dataset.version), action);
+});
+
+$('#btn-rc-refresh').addEventListener('click', () => loadReviewComments(false));
+$('#btn-rc-create').addEventListener('click', createReviewComment);
+$('#btn-rc-fill').addEventListener('click', () => {
+  if (!state.project || state.project.words.length === 0) {
+    return toast('当前项目还没有导入逐词转写', true);
+  }
+  $('#rc-word-start').value = 0;
+  $('#rc-word-end').value = state.project.words.length - 1;
+});
 

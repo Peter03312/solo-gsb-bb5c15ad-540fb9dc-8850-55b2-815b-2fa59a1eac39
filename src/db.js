@@ -319,6 +319,36 @@ CREATE TABLE IF NOT EXISTS glossary_terms (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_terms_source
   ON glossary_terms(glossary_id, source);
+
+-- 逐词区间复核意见（项目校对页）：意见锚定“逐词导入代次 + 起止词序”，不锚定字幕 ID/行号。
+--   open     待处理（新建）
+--   resolved 已关闭：关闭时必须存在相交的当前字幕，并保存其文本/时间/词区间快照
+--                    （close_snapshot_json）；之后相交字幕的这些内容变化 → 自动转 review
+--   review   待复核（关闭后相交字幕内容变化，需再次显式关闭）
+--   history  历史（重新导入换代次后，旧意见仅留档：不附到新词段、不可关闭/重开）
+-- version 为意见版本：每次写入（关闭/重开）+1，写入须携带，过期返回当前值且不修改。
+-- sub_version_snapshot 为创建时携带的字幕集版本（创建乐观锁）；words_json 为创建时词段快照，
+-- 重新导入后历史意见仍可按快照查看词段。
+CREATE TABLE IF NOT EXISTS review_comments (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id           INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  import_version       INTEGER NOT NULL,          -- 创建时逐词导入代次（projects.import_version）
+  word_start           INTEGER NOT NULL,          -- 起止词序（闭区间，words.idx）
+  word_end             INTEGER NOT NULL,
+  text                 TEXT NOT NULL,             -- 非空复核意见
+  note                 TEXT NOT NULL DEFAULT '',  -- 可选说明
+  status               TEXT NOT NULL DEFAULT 'open',
+  version              INTEGER NOT NULL DEFAULT 1,
+  sub_version_snapshot INTEGER NOT NULL,          -- 创建时读取的字幕集版本
+  words_json           TEXT NOT NULL,             -- 创建时词段快照（[{idx,text,start_ms,end_ms}]）
+  close_snapshot_json  TEXT,                      -- 关闭时相交字幕快照（resolved/review 时存在）
+  closed_at            TEXT,
+  reopened_at          TEXT,
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_review_comments_project
+  ON review_comments(project_id, status, id);
 `;
 
 const DEFAULT_RULES = { max_chars: 30, min_duration_ms: 800, max_cps: 20 };
